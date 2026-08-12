@@ -9137,7 +9137,23 @@ def _resolve_update_branch(args) -> str:
     ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
     the same answer.
     """
-    return (getattr(args, "branch", None) or "main").strip() or "main"
+    explicit = (getattr(args, "branch", None) or "").strip()
+    if explicit:
+        return explicit
+    # No explicit --branch: honour a per-install default from config so a fork
+    # can track its own distribution branch (e.g. "custom") without passing
+    # --branch on every update. Falls back to "main" when unset.
+    try:
+        from hermes_cli.config import load_config
+
+        cfg_branch = str(
+            ((load_config() or {}).get("updates", {}) or {}).get("branch", "") or ""
+        ).strip()
+        if cfg_branch:
+            return cfg_branch
+    except Exception:
+        pass
+    return "main"
 
 
 def _size_delta_label(saved_mb: float) -> str:
