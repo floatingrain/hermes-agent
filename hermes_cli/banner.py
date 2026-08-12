@@ -215,8 +215,31 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _configured_update_branch() -> str:
+    """Branch this install tracks for updates (config ``updates.branch``).
+
+    A fork distribution tracks its own long-lived branch (e.g. "mine"); when
+    configured, every update-availability probe must compare against that
+    branch instead of ``origin/main`` or it reports a phantom update forever.
+    Mirrors ``_resolve_update_branch`` in main.py so the indicator checks the
+    same branch ``hermes update`` would pull. Falls back to "main".
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        branch = str(
+            ((load_config() or {}).get("updates", {}) or {}).get("branch", "") or ""
+        ).strip()
+        if branch:
+            return branch
+    except Exception:
+        pass
+    return "main"
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+    """Count commits behind the configured update branch in a local checkout."""
+    update_branch = _configured_update_branch()
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
@@ -245,7 +268,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
         # unaffected; the shallow path compares against FETCH_HEAD, which a
         # scoped fetch also updates.
-        fetch_args = ["git", "fetch", "origin", "main"]
+        fetch_args = ["git", "fetch", "origin", update_branch]
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
@@ -264,7 +287,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         target_rev = (
             _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
+            or _git_stdout(["rev-parse", f"origin/{update_branch}"], cwd=repo_dir)
         )
         if not head_rev or not target_rev:
             return None
@@ -272,7 +295,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "rev-list", "--count", f"HEAD..origin/{update_branch}"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=5,
             cwd=str(repo_dir),
