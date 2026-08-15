@@ -2338,10 +2338,35 @@ function readDesktopUpdateConfig() {
     const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
     const branch = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
 
-    return { branch: branch || DEFAULT_UPDATE_BRANCH }
+    if (branch) {
+      return { branch }
+    }
   } catch {
-    return { branch: DEFAULT_UPDATE_BRANCH }
+    // fall through to the shared-config default below
   }
+
+  // No desktop-local branch pinned.  Fall back to the backend's
+  // config.yaml ``updates.branch`` so a distribution fork (whose default
+  // update branch differs from upstream ``main``) is honoured by the
+  // desktop indicator too — the CLI already reads this key via
+  // _resolve_update_branch.  Lightweight line scan; no YAML dependency.
+  try {
+    const configPath = path.join(HERMES_HOME, 'config.yaml')
+    const source = fs.readFileSync(configPath, 'utf8')
+    const updatesMatch = source.match(/^updates:\s*$/m)
+    if (updatesMatch) {
+      const tail = source.slice(updatesMatch.index)
+      const section = tail.split(/^\S[^:]*:/m)[0] || tail
+      const branchMatch = section.match(/^\s*branch:\s*(\S+)\s*$/m)
+      if (branchMatch && branchMatch[1]) {
+        return { branch: branchMatch[1] }
+      }
+    }
+  } catch {
+    // no config.yaml (fresh install / non-standard HERMES_HOME) -> main
+  }
+
+  return { branch: DEFAULT_UPDATE_BRANCH }
 }
 
 // Atomic file write: temp + rename (atomic on all platforms). Prevents
