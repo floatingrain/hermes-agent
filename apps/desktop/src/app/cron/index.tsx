@@ -143,6 +143,52 @@ function jobProvider(job: CronJob): string {
   return asText(job.provider).trim()
 }
 
+// Cron job model overrides are stored/rendered as one ``${providerSlug}:${model}``
+// select value. Provider slugs may themselves contain ``:`` — the canonical
+// custom-provider identity is ``custom:<name>`` (e.g.
+// ``custom:qianwen-token-plan``) — so a naive ``indexOf(':')`` split corrupts
+// the pair: ``custom:qianwen-token-plan:deepseek-v4-flash-0731`` would decode to
+// provider ``custom`` + model ``qianwen-token-plan:deepseek-v4-flash-0731``, and
+// the mangled model id then fails the API call with HTTP 400. Split on the
+// longest known provider slug instead; the model half may still contain ``:``
+// (e.g. openrouter 'anthropic/claude-sonnet-4:beta').
+function splitModelChoice(
+  choice: string,
+  providers: Array<{ slug: string }>,
+): { provider: string; model: string } {
+  if (choice === MODEL_DEFAULT_VALUE) {
+    return { provider: '', model: '' }
+  }
+
+  let matched: { slug: string } | null = null
+  for (const provider of providers) {
+    if (choice.startsWith(`${provider.slug}:`)) {
+      if (!matched || provider.slug.length > matched.slug.length) {
+        matched = provider
+      }
+    }
+  }
+
+  if (matched) {
+    return {
+      provider: matched.slug,
+      model: choice.slice(matched.slug.length + 1),
+    }
+  }
+
+  // Unknown provider (e.g. it left the catalog) — fall back to the legacy
+  // first-colon split so a stored pin still round-trips.
+  const legacyIndex = choice.indexOf(':')
+  if (legacyIndex >= 0) {
+    return {
+      provider: choice.slice(0, legacyIndex),
+      model: choice.slice(legacyIndex + 1),
+    }
+  }
+
+  return { provider: '', model: choice }
+}
+
 function cronParts(expr: string): null | string[] {
   const parts = expr.trim().replace(/\s+/g, ' ').split(' ')
 
@@ -1014,10 +1060,13 @@ function CronEditorDialog({
     }
 
     // Decode `${providerSlug}:${model}` — the model half may itself contain
-    // ':' (e.g. openrouter 'anthropic/claude-sonnet-4:beta'), so split once.
-    const overrideIndex = modelChoice === MODEL_DEFAULT_VALUE ? -1 : modelChoice.indexOf(':')
-    const overrideProvider = overrideIndex >= 0 ? modelChoice.slice(0, overrideIndex) : ''
-    const overrideModel = overrideIndex >= 0 ? modelChoice.slice(overrideIndex + 1) : ''
+    // ':' (e.g. openrouter 'anthropic/claude-sonnet-4:beta'). Provider slugs
+    // may too (canonical custom identity is `custom:<name>`), so match the
+    // known provider slug instead of splitting on the first colon.
+    const { provider: overrideProvider, model: overrideModel } = splitModelChoice(
+      modelChoice,
+      modelProviders,
+    )
 
     setSaving(true)
     setError(null)
@@ -1198,7 +1247,7 @@ function CronEditorDialog({
                     <SelectItem value={MODEL_DEFAULT_VALUE}>{c.modelDefault}</SelectItem>
                     {!modelChoiceKnown && (
                       <SelectItem className="font-mono" value={modelChoice}>
-                        {modelChoice.slice(modelChoice.indexOf(':') + 1)}
+                        {splitModelChoice(modelChoice, modelProviders).model || modelChoice}
                       </SelectItem>
                     )}
                     {modelProviders.map(provider => (
